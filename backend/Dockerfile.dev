@@ -1,0 +1,24 @@
+# Backend Dockerfile - Development
+FROM node:20-alpine
+
+RUN apk add --no-cache libc6-compat openssl
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY prisma ./prisma/
+
+# Install all dependencies (including devDependencies)
+RUN npm install
+
+# Generate Prisma Client
+RUN npx prisma generate
+
+# Copy source code
+COPY . .
+
+EXPOSE 3001
+
+# Development command with hot reload
+CMD ["npm", "run", "start:dev"]

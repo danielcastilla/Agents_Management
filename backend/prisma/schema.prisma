@@ -1,0 +1,374 @@
+// ===========================================
+// Prisma Schema - AI Agents Management Platform
+// ===========================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================
+// Enums
+// ===========================================
+
+enum UserRole {
+  ADMIN
+  SUPERVISOR
+  OPERATOR
+  AUDITOR
+}
+
+enum AgentEnvironment {
+  DEVELOPMENT
+  STAGING
+  PRODUCTION
+}
+
+enum AgentStatus {
+  ACTIVE
+  INACTIVE
+  DEPRECATED
+}
+
+enum RunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+  TIMEOUT
+}
+
+enum HttpMethod {
+  GET
+  POST
+  PUT
+  PATCH
+  DELETE
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  EXECUTE
+  CLONE
+  ACTIVATE
+  DEACTIVATE
+  LOGIN
+  LOGOUT
+  TOOL_INVOKE
+  CONFIG_CHANGE
+}
+
+enum EntityType {
+  AGENT
+  USER
+  TOOL
+  AGENT_RUN
+  TOOL_INVOCATION
+  API_KEY
+  SYSTEM
+}
+
+// ===========================================
+// User Management
+// ===========================================
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  firstName    String?   @map("first_name")
+  lastName     String?   @map("last_name")
+  role         UserRole  @default(OPERATOR)
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  agents        Agent[]
+  agentRuns     AgentRun[]
+  auditLogs     AuditLog[]
+  apiKeys       ApiKey[]
+  agentPermissions AgentPermission[]
+
+  @@index([email])
+  @@index([role])
+  @@index([createdAt])
+  @@map("users")
+}
+
+// ===========================================
+// Agent Management
+// ===========================================
+
+model Agent {
+  id              String           @id @default(uuid())
+  name            String
+  description     String?
+  modelProvider   String           @map("model_provider") // OpenAI, Anthropic, etc.
+  modelName       String           @map("model_name")
+  temperature     Float            @default(0.7)
+  maxTokens       Int              @default(4096) @map("max_tokens")
+  systemPrompt    String?          @map("system_prompt") @db.Text
+  memoryEnabled   Boolean          @default(false) @map("memory_enabled")
+  environment     AgentEnvironment @default(DEVELOPMENT)
+  status          AgentStatus      @default(ACTIVE)
+  dailyTokenLimit Int?             @map("daily_token_limit")
+  version         Int              @default(1)
+  parentId        String?          @map("parent_id") // For cloned agents
+  
+  // Metadata
+  createdById     String           @map("created_by_id")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  createdBy       User             @relation(fields: [createdById], references: [id])
+  parent          Agent?           @relation("AgentVersions", fields: [parentId], references: [id])
+  versions        Agent[]          @relation("AgentVersions")
+  runs            AgentRun[]
+  tools           AgentTool[]
+  permissions     AgentPermission[]
+  
+  @@index([name])
+  @@index([createdById])
+  @@index([environment])
+  @@index([status])
+  @@index([createdAt])
+  @@index([modelProvider])
+  @@map("agents")
+}
+
+model AgentVersion {
+  id            String   @id @default(uuid())
+  agentId       String   @map("agent_id")
+  version       Int
+  configuration Json     // Snapshot of agent configuration
+  changelog     String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([agentId, version])
+  @@index([agentId])
+  @@map("agent_versions")
+}
+
+// ===========================================
+// Agent Execution
+// ===========================================
+
+model AgentRun {
+  id          String    @id @default(uuid())
+  agentId     String    @map("agent_id")
+  userId      String    @map("user_id")
+  input       String    @db.Text
+  output      String?   @db.Text
+  tokensUsed  Int?      @map("tokens_used")
+  promptTokens Int?     @map("prompt_tokens")
+  completionTokens Int? @map("completion_tokens")
+  cost        Decimal?  @db.Decimal(10, 6)
+  status      RunStatus @default(PENDING)
+  errorMessage String?  @map("error_message") @db.Text
+  metadata    Json?     // Additional execution metadata
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+
+  // Relations
+  agent          Agent           @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id])
+  toolInvocations ToolInvocation[]
+
+  @@index([agentId])
+  @@index([userId])
+  @@index([status])
+  @@index([startedAt])
+  @@index([agentId, startedAt])
+  @@map("agent_runs")
+}
+
+// ===========================================
+// Tools Management
+// ===========================================
+
+model Tool {
+  id          String     @id @default(uuid())
+  name        String     @unique
+  description String?
+  schema      Json       // JSON Schema for tool parameters
+  endpoint    String?    // External API endpoint
+  method      HttpMethod @default(POST)
+  headers     Json?      // Custom headers
+  timeout     Int        @default(30000) // Timeout in ms
+  retryCount  Int        @default(3) @map("retry_count")
+  isActive    Boolean    @default(true) @map("is_active")
+  isMock      Boolean    @default(false) @map("is_mock") // For simulation
+  mockResponse Json?     @map("mock_response")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  agents      AgentTool[]
+  invocations ToolInvocation[]
+
+  @@index([name])
+  @@index([isActive])
+  @@map("tools")
+}
+
+model AgentTool {
+  id        String   @id @default(uuid())
+  agentId   String   @map("agent_id")
+  toolId    String   @map("tool_id")
+  isEnabled Boolean  @default(true) @map("is_enabled")
+  priority  Int      @default(0) // Execution priority
+  config    Json?    // Agent-specific tool configuration
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tool  Tool  @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, toolId])
+  @@index([agentId])
+  @@index([toolId])
+  @@map("agent_tools")
+}
+
+model ToolInvocation {
+  id          String   @id @default(uuid())
+  toolId      String   @map("tool_id")
+  agentRunId  String   @map("agent_run_id")
+  input       Json
+  output      Json?
+  duration    Int?     // Duration in ms
+  success     Boolean  @default(false)
+  errorMessage String? @map("error_message")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  tool     Tool     @relation(fields: [toolId], references: [id])
+  agentRun AgentRun @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+
+  @@index([toolId])
+  @@index([agentRunId])
+  @@index([createdAt])
+  @@map("tool_invocations")
+}
+
+// ===========================================
+// Access Control
+// ===========================================
+
+model AgentPermission {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  agentId   String   @map("agent_id")
+  canRead   Boolean  @default(true) @map("can_read")
+  canWrite  Boolean  @default(false) @map("can_write")
+  canExecute Boolean @default(false) @map("can_execute")
+  canDelete Boolean  @default(false) @map("can_delete")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, agentId])
+  @@index([userId])
+  @@index([agentId])
+  @@map("agent_permissions")
+}
+
+// ===========================================
+// API Keys Management
+// ===========================================
+
+model ApiKey {
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
+  name         String
+  keyHash      String    @unique @map("key_hash") // Hashed API key
+  keyPrefix    String    @map("key_prefix") // First 8 chars for identification
+  permissions  Json      // Allowed operations
+  expiresAt    DateTime? @map("expires_at")
+  lastUsedAt   DateTime? @map("last_used_at")
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([keyHash])
+  @@index([keyPrefix])
+  @@map("api_keys")
+}
+
+// ===========================================
+// Audit Logging
+// ===========================================
+
+model AuditLog {
+  id          String      @id @default(uuid())
+  userId      String?     @map("user_id")
+  action      AuditAction
+  entityType  EntityType  @map("entity_type")
+  entityId    String?     @map("entity_id")
+  oldValue    Json?       @map("old_value")
+  newValue    Json?       @map("new_value")
+  metadata    Json?       // Additional context (IP, user agent, etc.)
+  ipAddress   String?     @map("ip_address")
+  userAgent   String?     @map("user_agent")
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
+  @@index([entityId])
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// ===========================================
+// System Configuration
+// ===========================================
+
+model SystemConfig {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  category  String   @default("general")
+  isSecret  Boolean  @default(false) @map("is_secret")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([category])
+  @@map("system_configs")
+}
+
+// ===========================================
+// Token Usage Tracking
+// ===========================================
+
+model TokenUsage {
+  id          String   @id @default(uuid())
+  agentId     String   @map("agent_id")
+  date        DateTime @db.Date
+  tokensUsed  Int      @map("tokens_used")
+  cost        Decimal  @db.Decimal(10, 6)
+  runCount    Int      @default(0) @map("run_count")
+  
+  @@unique([agentId, date])
+  @@index([agentId])
+  @@index([date])
+  @@map("token_usage")
+}
