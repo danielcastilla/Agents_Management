@@ -340,5 +340,3 @@ The platform includes built-in observability:
 This project is licensed under the MIT License - see the LICENSE file for details.
 
 ---
-
-Built with ❤️ for Enterprise AI Governance
